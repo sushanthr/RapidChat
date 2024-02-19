@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html>
     <head>
-      <link rel="stylesheet"  type="text/css" href="Style.css">
+      <base href="https://sushanthr.github.io/RapidChat/" />
+      <link rel="stylesheet" href="Style.css">
       <link rel="icon" type="image/x-icon" href="favicon.ico">
       <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.17.0/ort.webgpu.min.js"></script>
     </head>
@@ -20,7 +21,7 @@
     </body>
     <script type="module" >
         import {AutoTokenizer} from 'https://cdn.jsdelivr.net/npm/@xenova/transformers';
-        import {Sampler} from '/RapidChat/sampler.js';
+        import {Sampler} from 'sampler.js';
 
         let tokenizer = null;
         let onnx_session = null;
@@ -35,7 +36,7 @@
         {
             if (!tokenizer)
             {
-              tokenizer = await AutoTokenizer.from_pretrained('tokenizer');
+              tokenizer = await AutoTokenizer.from_pretrained('RapidChat/tokenizer');
             }
             if (!onnx_session) {
                 const onnx_model = 'https://huggingface.co/shoibl/TinyLlama-Chat-v1.1-onnx_quantized/resolve/main/onnx/decoder_model_merged_quantized.onnx?download=true';
