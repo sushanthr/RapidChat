@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-      <link rel="stylesheet" href="style.css">
+      <link rel="stylesheet"  type="text/css" href="RapidChat/style.css">
       <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.17.0/ort.webgpu.min.js"></script>
     </head>
     <body>
@@ -19,7 +19,7 @@
     </body>
     <script type="module" >
         import {AutoTokenizer} from 'https://cdn.jsdelivr.net/npm/@xenova/transformers';
-        import {Sampler} from '/sampler.js';
+        import {Sampler} from 'RapidChat/sampler.js';
 
         let tokenizer = null;
         let onnx_session = null;
