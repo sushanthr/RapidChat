@@ -133,24 +133,13 @@ button {
   position:relative;
   float:right;
   top: -60px;
-  background: url(send.svg) no-repeat;
+  background: url(Send.svg) no-repeat;
   right: 10px;
   background-size: cover;
   height: 50px;
   width: 50px;
   border:0px;
 }
-
-
-
-
-
-
-
-
-
-
-
 
 /* general styling */
 @font-face {
