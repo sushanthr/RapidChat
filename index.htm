@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html>
     <head>
-      <base href="https://sushanthr.github.io/RapidChat/" />
       <link rel="stylesheet" href="Style.css">
       <link rel="icon" type="image/x-icon" href="favicon.ico">
       <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.17.0/ort.webgpu.min.js"></script>
@@ -29,8 +28,8 @@
 
         // Text generation parameters.
         const max_tokens = 256;
-        const temperature = 0.7;
-        const topk = 50;
+        const temperature = 0.2;
+        const topk = 10;
     
         async function init()
         {
@@ -112,6 +111,7 @@
 
             const output = await tokenizer.decode(output_tokens);
             update_element.innerText = output;
+            update_element.scrollIntoView(false);
             window.requestAnimationFrame(generateNextToken);
         }
 
@@ -179,7 +179,7 @@
 
         async function onSend() {
             const inputText = document.getElementById("input").value;
-            const prompt = "<|system|>\nYou are a friendly assistant.</s>\n<|user|>"+inputText+"</s>\n<|assistant|>\n";
+            const prompt = "<|system|>: You are a friendly asssitant, that should respond to user in a short and concise way. </s>\n<|user|>:"+inputText+"</s>\n<|assistant|>:\n";
             let input = document.createElement("p");
             input.setAttribute("class", "from-me");
             input.innerText = inputText;
