@@ -36,7 +36,7 @@
         {
             if (!tokenizer)
             {
-              tokenizer = await AutoTokenizer.from_pretrained('RapidChat/tokenizer');
+              tokenizer = await AutoTokenizer.from_pretrained('tokenizer');
             }
             if (!onnx_session) {
                 const onnx_model = 'https://huggingface.co/shoibl/TinyLlama-Chat-v1.1-onnx_quantized/resolve/main/onnx/decoder_model_merged_quantized.onnx?download=true';
