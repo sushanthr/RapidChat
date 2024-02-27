@@ -1,6 +1,6 @@
 ## RapidChat
 
-A quick prototype of client side inferencing in the brower.
+A quick prototype of client side inferencing in the browser.
 See https://sushanthr.github.io/RapidChat/
 
 ## Model details
