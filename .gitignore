@@ -1,2 +1,3 @@
 models\onnx\decoder_model_merged_quantized.onnx
 models/onnx/decoder_model_merged_quantized.onnx
+models/onnx/decoder_model_merged_quantized_si.onnx
