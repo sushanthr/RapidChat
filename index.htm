@@ -4,13 +4,20 @@
       <link rel="stylesheet" href="Style.css">
       <link rel="icon" type="image/x-icon" href="favicon.ico">
       <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.17.0/ort.webgpu.min.js"></script>
+      <script src="/RapidChat/models/model_cpu.js"></script>
+      <script src="/RapidChat/models/CpuOps.js"></script>
     </head>
     <body>
         <div class="container">
             <h1>Rapid Chat</h1>
             <h2>Talk to a LLAMA, see what it knows.</h2>
           
-            <p class="comment">Current backend is onnx-web-runtime-wasm.</p>
+            <p class="comment">Current backend is 
+                <select name="backend" id="backend" class="select-dropdown">
+                    <option value="RapidWebNN">RapidWebNN</option>
+                    <option value="onnx-web-runtime-wasm">onnx-web-runtime-wasm</option>
+                </select>
+            </p>
           
             <div class="imessage">
             </div>
@@ -24,6 +31,7 @@
 
         let tokenizer = null;
         let onnx_session = null;
+        let webnn_weights = null;
         let sampler = null;
 
         // Text generation parameters.
@@ -31,27 +39,45 @@
         const temperature = 0.2;
         const topk = 10;
     
+        async function fetchCached(url)
+        {
+            let cache = await caches.open("RapidChat")
+            //await cache.add(url);
+            let model_response = await cache.match(url);
+            if (!model_response)
+            {
+                await cache.add(url);
+                model_response = await cache.match(url);
+            }
+            return model_response;
+        }
+    
         async function init()
         {
             if (!tokenizer)
             {
               tokenizer = await AutoTokenizer.from_pretrained('../RapidChat/models/tokenizer');
             }
-            if (!onnx_session) {
-                const onnx_model = 'https://huggingface.co/shoibl/TinyLlama-Chat-v1.1-onnx_quantized/resolve/main/onnx/decoder_model_merged_quantized.onnx?download=true';
-                let cache = await caches.open("onnx")
-                let model_response = await cache.match(onnx_model);
-                if (!model_response)
+            if (document.getElementById("backend").value == "RapidWebNN")
+            {
+                if (!webnn_weights)
                 {
-                    await cache.add(onnx_model);
-                    model_response = await cache.match(onnx_model);
+                    webnn_weights = await fetchCached("/RapidChat/models/Weights.bin");
+                    webnn_weights = await webnn_weights.arrayBuffer();
                 }
-                onnx_session = await ort.InferenceSession.create(await model_response.arrayBuffer(), {
-                    quantized: true,
-                    session_options: {
-                        executionProviders: ["wasm"]
-                    }
-                });
+            }
+            else
+            {
+                if (!onnx_session) {
+                    const onnx_model = 'https://huggingface.co/shoibl/TinyLlama-Chat-v1.1-onnx_quantized/resolve/main/onnx/decoder_model_merged_quantized.onnx?download=true';
+                    let model_response = await fetchCached(onnx_model);
+                    onnx_session = await ort.InferenceSession.create(await model_response.arrayBuffer(), {
+                        quantized: true,
+                        session_options: {
+                            executionProviders: ["wasm"]
+                        }
+                    });
+                }
             }
             if (!sampler)
             {
@@ -66,6 +92,36 @@
         let model_inputs = null;
         let update_element = null;
 
+        function getTensor(array, dims)
+        {
+            if (document.getElementById("backend").value == "RapidWebNN")
+            {
+                for (let index in dims)
+                {
+                    if (dims[index] == 0) {
+                        return new NullTensor(dims);
+                    }
+                }
+                if (array instanceof BigInt64Array)
+                {
+                    array.operand_desc = {type: 'int64', dataType: 'int64', dimensions: dims};
+                }
+                else if (array instanceof Float32Array)
+                {
+                    array.operand_desc = {type: 'float32', dataType: 'float32', dimensions: dims};
+                }
+                else
+                {
+                    throw new Exception("Unimplemented getTensor");
+                }
+                array.data = array;
+                return array;
+            }
+            else
+            {
+                return new ort.Tensor(array, dims);
+            }
+        }
         async function generateNextToken()
         {
             // Popluate position_ids.
@@ -74,7 +130,28 @@
             }
 
             // Run inference
-            const results = await onnx_session.run(model_inputs);
+            if (document.getElementById("backend").value == "RapidWebNN") {
+                const context = await navigator.ml.createContext(
+                    {'deviceType' : 'gpu'});
+                let webnn_builder = new MLGraphBuilder(context);
+                InstallCpuOps(webnn_builder);
+                let graph_inputs=[];
+                for (let key of Object.keys(model_inputs)){
+                    if (model_inputs[key] instanceof NullTensor)
+                    {
+                        graph_inputs.push(model_inputs[key]);
+                    }
+                    else
+                    {
+                        graph_inputs.push(webnn_builder.input(key,  model_inputs[key].operand_desc));
+                    }
+                }
+                graph_inputs.push(webnn_weights);
+                graph_inputs.push(webnn_builder);
+                const graph = loadModelGraph(...graph_inputs);
+            } else {
+                const results = await onnx_session.run(model_inputs);
+            }
 
             let prev_input_length = model_inputs['input_ids'].dims.slice(-1)[0];
             let last_token = sampler.sample(results.logits, prev_input_length - 1);
@@ -96,12 +173,12 @@
             // New input is just the last token
             let new_input_ids = new BigInt64Array(1);
             new_input_ids[0] = BigInt(last_token[0][0]);
-            model_inputs['input_ids'] = new ort.Tensor(new_input_ids, [1, 1]);
+            model_inputs['input_ids'] = getTensor(new_input_ids, [1, 1]);
             let attention_mask =  new BigInt64Array(past_sequence_length+1);
             attention_mask.fill(BigInt(1), 0, past_sequence_length + 1);
 
-            model_inputs['attention_mask'] = new ort.Tensor(attention_mask, [1, past_sequence_length+1]);
-            model_inputs['position_ids'] = new ort.Tensor(new BigInt64Array(1), [1 , 1]);
+            model_inputs['attention_mask'] = getTensor(attention_mask, [1, past_sequence_length+1]);
+            model_inputs['position_ids'] = getTensor(new BigInt64Array(1), [1 , 1]);
             for (let ctx = 0; ctx < 22; ctx++)
             {
                 let ctx_string = ctx.toString();
@@ -125,53 +202,53 @@
             output_tokens = [];
             let past_key_values_size = 1 * 4 * past_sequence_length * 64;
             model_inputs = { 
-                    input_ids: new ort.Tensor(input_ids.data, input_ids.dims),
-                    attention_mask: new ort.Tensor(attention_mask.data, attention_mask.dims), 
-                    position_ids: new ort.Tensor(new BigInt64Array(input_ids.data.length), [1,input_ids.data.length]), 
-                    'past_key_values.0.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.0.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.1.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.1.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.2.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.2.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.3.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.3.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.4.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.4.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.5.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.5.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.6.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.6.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.7.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.7.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.8.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.8.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.9.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.9.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.10.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.10.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.11.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.11.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.12.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.12.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.13.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.13.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.14.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.14.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.15.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.15.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.16.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.16.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.17.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.17.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.18.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.18.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.19.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.19.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.20.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.20.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.21.key': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.21.value': new ort.Tensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    input_ids: getTensor(input_ids.data, input_ids.dims),
+                    attention_mask: getTensor(attention_mask.data, attention_mask.dims), 
+                    position_ids: getTensor(new BigInt64Array(input_ids.data.length), [1,input_ids.data.length]), 
+                    'past_key_values.0.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.0.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.1.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.1.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.2.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.2.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.3.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.3.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.4.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.4.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.5.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.5.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.6.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.6.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.7.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.7.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.8.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.8.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.9.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.9.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.10.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.10.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.11.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.11.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.12.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.12.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.13.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.13.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.14.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.14.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.15.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.15.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.16.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.16.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.17.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.17.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.18.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.18.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.19.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.19.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.20.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.20.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.21.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
+                    'past_key_values.21.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
                 };
       
             window.requestAnimationFrame(generateNextToken);
