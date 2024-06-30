@@ -112,6 +112,10 @@
                 {
                     array.operand_desc = {type: 'float32', dataType: 'float32', dimensions: dims};
                 }
+                else if (array instanceof Uint16Array)
+                {
+                    array.operand_desc = {type: 'float16', dataType: 'float16', dimensions: dims};
+                }
                 else
                 {
                     throw new Exception("Unimplemented getTensor");
@@ -161,9 +165,11 @@
             }
             let prev_input_length = model_inputs['input_ids'].data.length;
             let results = null;
+            let output_operands = null;
 
             // Run inference
-            if (document.getElementById("backend").value == "RapidWebNN") {
+            let webnn_mode = document.getElementById("backend").value == "RapidWebNN";
+            if (webnn_mode) {
                 const context = await navigator.ml.createContext(
                     {'deviceType' : 'gpu'});
                 let webnn_builder = new MLGraphBuilder(context);
@@ -181,7 +187,7 @@
                 }
                 graph_inputs.push(webnn_weights);
                 graph_inputs.push(webnn_builder);
-                const output_operands = loadModelGraph(...graph_inputs);
+                output_operands = loadModelGraph(...graph_inputs);
                 const graph = await webnn_builder.build(output_operands);
                 const outputs = allocateWebNNOutputBuffers(output_operands);
                 let webnn_inputs = replaceNullTensors(model_inputs);
@@ -219,8 +225,16 @@
             for (let ctx = 0; ctx < 22; ctx++)
             {
                 let ctx_string = ctx.toString();
-                model_inputs['past_key_values.'+ ctx_string +'.key'] = results['present.'+ctx_string+'.key'];
-                model_inputs['past_key_values.'+ ctx_string +'.value'] = results['present.'+ctx_string+'.value'];
+                if (webnn_mode)
+                {
+                    model_inputs['past_key_values.'+ ctx_string +'.key'] = getTensor(results['present.'+ctx_string+'.key'],output_operands[['present.'+ctx_string+'.key']].shape());
+                    model_inputs['past_key_values.'+ ctx_string +'.value'] = getTensor(results['present.'+ctx_string+'.value'], output_operands[['present.'+ctx_string+'.value']].shape());
+                }
+                else 
+                {
+                    model_inputs['past_key_values.'+ ctx_string +'.key'] = results['present.'+ctx_string+'.key'];
+                    model_inputs['past_key_values.'+ ctx_string +'.value'] = results['present.'+ctx_string+'.value'];
+                }
             }
 
             const output = await tokenizer.decode(output_tokens);
