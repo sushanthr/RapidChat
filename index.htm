@@ -55,16 +55,16 @@
         {
             if (!tokenizer)
             {
-              tokenizer = await AutoTokenizer.from_pretrained('/tokenizer');
+              tokenizer = await AutoTokenizer.from_pretrained('./tokenizer');
             }
             if (document.getElementById("backend").value == "RapidWebNN")
             {
                 if (!webnn_weights)
                 {
                     webnn_weights = [
-                        await (await fetchCached("/models/Weights0.bin")).arrayBuffer(),
-                        await (await fetchCached("/models/Weights1.bin")).arrayBuffer(),
-                        await (await fetchCached("/models/Weights2.bin")).arrayBuffer(),
+                        await (await fetchCached("./models/Weights0.bin")).arrayBuffer(),
+                        await (await fetchCached("./models/Weights1.bin")).arrayBuffer(),
+                        await (await fetchCached("./models/Weights2.bin")).arrayBuffer(),
                     ];
                 }
             }
