@@ -4,8 +4,8 @@
       <link rel="stylesheet" href="Style.css">
       <link rel="icon" type="image/x-icon" href="favicon.ico">
       <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.17.0/ort.webgpu.min.js"></script>
-      <script src="/RapidChat/models/model_cpu.js"></script>
-      <script src="/RapidChat/models/CpuOps.js"></script>
+      <script src="models/final_model_reordered.js"></script>
+      <script src="models/CpuOps.js"></script>
     </head>
     <body>
         <div class="container">
@@ -27,7 +27,7 @@
     </body>
     <script type="module" >
         import {AutoTokenizer} from 'https://cdn.jsdelivr.net/npm/@xenova/transformers';
-        import {Sampler} from '/RapidChat/sampler.js';
+        import {Sampler} from '/sampler.js';
 
         let tokenizer = null;
         let onnx_session = null;
@@ -41,8 +41,8 @@
     
         async function fetchCached(url)
         {
+            return fetch(url);
             let cache = await caches.open("RapidChat")
-            //await cache.add(url);
             let model_response = await cache.match(url);
             if (!model_response)
             {
@@ -56,13 +56,13 @@
         {
             if (!tokenizer)
             {
-              tokenizer = await AutoTokenizer.from_pretrained('../RapidChat/models/tokenizer');
+              tokenizer = await AutoTokenizer.from_pretrained('/tokenizer');
             }
             if (document.getElementById("backend").value == "RapidWebNN")
             {
                 if (!webnn_weights)
                 {
-                    webnn_weights = await fetchCached("/RapidChat/models/Weights.bin");
+                    webnn_weights = await fetchCached("/models/Weights.bin");
                     webnn_weights = await webnn_weights.arrayBuffer();
                 }
             }
@@ -148,7 +148,10 @@
                 }
                 graph_inputs.push(webnn_weights);
                 graph_inputs.push(webnn_builder);
-                const graph = loadModelGraph(...graph_inputs);
+                const output_operands = loadModelGraph(...graph_inputs);
+                const graph = await webnn_builder.build(output_operands);
+                const outputs = {};
+                let result = await context.compute(graph, model_inputs, outputs);
             } else {
                 const results = await onnx_session.run(model_inputs);
             }

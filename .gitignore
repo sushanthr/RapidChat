@@ -1,3 +1,7 @@
 models\onnx\decoder_model_merged_quantized.onnx
 models/onnx/decoder_model_merged_quantized.onnx
 models/onnx/decoder_model_merged_quantized_si.onnx
+models/onnx/decoder_model_merged.onnx
+models/onnx/decoder_model_merged.onnx.data
+models/onnx/TinyLlama-1.1B-FP16.onnx
+models/Weights.bin
