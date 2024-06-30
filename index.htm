@@ -41,7 +41,6 @@
     
         async function fetchCached(url)
         {
-            return fetch(url);
             let cache = await caches.open("RapidChat")
             let model_response = await cache.match(url);
             if (!model_response)
@@ -62,8 +61,11 @@
             {
                 if (!webnn_weights)
                 {
-                    webnn_weights = await fetchCached("/models/Weights.bin");
-                    webnn_weights = await webnn_weights.arrayBuffer();
+                    webnn_weights = [
+                        await (await fetchCached("/models/Weights0.bin")).arrayBuffer(),
+                        await (await fetchCached("/models/Weights1.bin")).arrayBuffer(),
+                        await (await fetchCached("/models/Weights2.bin")).arrayBuffer(),
+                    ];
                 }
             }
             else
@@ -122,12 +124,43 @@
                 return new ort.Tensor(array, dims);
             }
         }
+        
+        function mulReduce(arr) {
+            return arr.reduce((product, value) => product * value, 1);
+        }
+        function allocateWebNNOutputBuffers(output_operands)
+        {
+            let output_buffers = {};
+            for (let element in output_operands) {
+                if (output_operands[element].dataType() == 'float32')
+                {
+                    output_buffers[element] = new Float32Array(mulReduce(output_operands[element].shape()));
+                }
+                if (output_operands[element].dataType() == 'float16') {
+                    output_buffers[element] = new Uint16Array(mulReduce(output_operands[element].shape()));
+                }
+            }
+            return output_buffers;
+        }
+        function replaceNullTensors(operands)
+        {
+            let result = {};
+            for (let element in operands) {
+                if (!(operands[element] instanceof NullTensor))
+                {
+                    result[element] = operands[element];
+                }
+            }
+            return result;
+        }
         async function generateNextToken()
         {
             // Popluate position_ids.
             for (let pos = 0; pos < model_inputs['input_ids'].data.length; pos++) {
                 model_inputs['position_ids'].data[pos]=BigInt(past_sequence_length + pos);
             }
+            let prev_input_length = model_inputs['input_ids'].data.length;
+            let results = null;
 
             // Run inference
             if (document.getElementById("backend").value == "RapidWebNN") {
@@ -150,15 +183,16 @@
                 graph_inputs.push(webnn_builder);
                 const output_operands = loadModelGraph(...graph_inputs);
                 const graph = await webnn_builder.build(output_operands);
-                const outputs = {};
-                let result = await context.compute(graph, model_inputs, outputs);
+                const outputs = allocateWebNNOutputBuffers(output_operands);
+                let webnn_inputs = replaceNullTensors(model_inputs);
+                results = await context.compute(graph, webnn_inputs, outputs);
+                results = results.outputs;
+                results.logits = new ort.Tensor(results.logits, output_operands.logits.shape());
             } else {
-                const results = await onnx_session.run(model_inputs);
+                results = await onnx_session.run(model_inputs);
             }
 
-            let prev_input_length = model_inputs['input_ids'].dims.slice(-1)[0];
             let last_token = sampler.sample(results.logits, prev_input_length - 1);
-
             // LLama has spoken.
             if (last_token[0][0] == BigInt(2) || output_tokens.length > max_tokens) {
                 // Clean up unused memory.
@@ -204,56 +238,24 @@
             past_sequence_length = 0;
             output_tokens = [];
             let past_key_values_size = 1 * 4 * past_sequence_length * 64;
-            model_inputs = { 
-                    input_ids: getTensor(input_ids.data, input_ids.dims),
-                    attention_mask: getTensor(attention_mask.data, attention_mask.dims), 
-                    position_ids: getTensor(new BigInt64Array(input_ids.data.length), [1,input_ids.data.length]), 
-                    'past_key_values.0.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.0.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.1.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.1.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.2.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.2.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.3.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.3.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.4.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.4.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.5.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.5.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.6.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.6.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.7.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.7.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.8.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.8.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.9.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.9.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.10.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.10.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.11.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.11.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.12.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.12.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.13.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.13.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.14.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.14.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.15.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.15.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.16.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.16.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.17.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.17.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.18.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.18.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.19.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.19.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.20.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.20.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.21.key': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                    'past_key_values.21.value': getTensor(new Float32Array(past_key_values_size), [1,4,past_sequence_length,64]),
-                };
-      
+            const num_heads = 22; // Number of layers (0 to 21)
+            const webnn = (document.getElementById("backend").value == "RapidWebNN"); // Set this to true for Float32Array, false for Uint16Array
+            model_inputs = {
+                input_ids: getTensor(input_ids.data, input_ids.dims),
+                attention_mask: getTensor(attention_mask.data, attention_mask.dims),
+                position_ids: getTensor(new BigInt64Array(input_ids.data.length), [1, input_ids.data.length]),
+            };
+            for (let i = 0; i < num_heads; i++) {
+                const ArrayType = webnn ? Uint16Array: Float32Array;
+                model_inputs[`past_key_values.${i}.key`] = getTensor(
+                    new ArrayType(past_key_values_size),
+                    [1, 4, past_sequence_length, 64]
+                );
+                model_inputs[`past_key_values.${i}.value`] = getTensor(
+                    new ArrayType(past_key_values_size),
+                    [1, 4, past_sequence_length, 64]
+                );
+            }
             window.requestAnimationFrame(generateNextToken);
         }
 

@@ -5,3 +5,6 @@ models/onnx/decoder_model_merged.onnx
 models/onnx/decoder_model_merged.onnx.data
 models/onnx/TinyLlama-1.1B-FP16.onnx
 models/Weights.bin
+models/Weights0.bin
+models/Weights1.bin
+models/Weights2.bin
