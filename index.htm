@@ -55,17 +55,17 @@
         {
             if (!tokenizer)
             {
-              tokenizer = await AutoTokenizer.from_pretrained('/RapidChat/models/tokenizer');
+              tokenizer = await AutoTokenizer.from_pretrained(window.location.href + "models/tokenizer/");
             }
             if (document.getElementById("backend").value == "RapidWebNN")
             {
                 if (!webnn_weights)
                 {
-                    webnn_weights = [
-                        await (await fetchCached("./models/Weights0.bin")).arrayBuffer(),
-                        await (await fetchCached("./models/Weights1.bin")).arrayBuffer(),
-                        await (await fetchCached("./models/Weights2.bin")).arrayBuffer(),
-                    ];
+                    webnn_weights = [];
+                    for (let i = 0; i < 17; i++) {
+                        let weight = await (await fetchCached(window.location.href + `/models/Weights${i}.bin`)).arrayBuffer();
+                        webnn_weights.push(weight);
+                    }                    
                 }
             }
             else
@@ -254,10 +254,17 @@
             let past_key_values_size = 1 * 4 * past_sequence_length * 64;
             const num_heads = 22; // Number of layers (0 to 21)
             const webnn = (document.getElementById("backend").value == "RapidWebNN"); // Set this to true for Float32Array, false for Uint16Array
+            let new_input_ids = new BigInt64Array(max_tokens);
+            let new_attention_mask = new BigInt64Array(max_tokens);
+            for (let i = 0; i < input_ids.data.length; ++i)
+            {
+                new_input_ids[i] = input_ids.data[i];
+                new_attention_mask[i] = attention_mask.data[i];
+            }
             model_inputs = {
-                input_ids: getTensor(input_ids.data, input_ids.dims),
-                attention_mask: getTensor(attention_mask.data, attention_mask.dims),
-                position_ids: getTensor(new BigInt64Array(input_ids.data.length), [1, input_ids.data.length]),
+                input_ids: getTensor(new_input_ids, [1, max_tokens]),
+                attention_mask: getTensor(new_attention_mask, [1, max_tokens]),
+                position_ids: getTensor(new BigInt64Array(max_tokens), [1, max_tokens]),
             };
             for (let i = 0; i < num_heads; i++) {
                 const ArrayType = webnn ? Uint16Array: Float32Array;
