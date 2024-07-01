@@ -55,7 +55,7 @@
         {
             if (!tokenizer)
             {
-              tokenizer = await AutoTokenizer.from_pretrained(window.location.href + "models/tokenizer/");
+              tokenizer = await AutoTokenizer.from_pretrained("../RapidChat/models/tokenizer");
             }
             if (document.getElementById("backend").value == "RapidWebNN")
             {
@@ -63,7 +63,8 @@
                 {
                     webnn_weights = [];
                     for (let i = 0; i < 17; i++) {
-                        let weight = await (await fetchCached(window.location.href + `/models/Weights${i}.bin`)).arrayBuffer();
+                        // https://huggingface.co/sushanthr/tinyLlama-1.1B-Chat-v1.0-fp16-webnn/resolve/main/Weights0.bin?download=true
+                        let weight = await (await fetchCached(window.location.href + `https://huggingface.co/sushanthr/tinyLlama-1.1B-Chat-v1.0-fp16-webnn/resolve/main/Weights${i}.bin?download=true`)).arrayBuffer();
                         webnn_weights.push(weight);
                     }                    
                 }
