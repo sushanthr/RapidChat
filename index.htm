@@ -64,7 +64,7 @@
                     webnn_weights = [];
                     for (let i = 0; i < 17; i++) {
                         // https://huggingface.co/sushanthr/tinyLlama-1.1B-Chat-v1.0-fp16-webnn/resolve/main/Weights0.bin?download=true
-                        let weight = await (await fetchCached(window.location.href + `https://huggingface.co/sushanthr/tinyLlama-1.1B-Chat-v1.0-fp16-webnn/resolve/main/Weights${i}.bin?download=true`)).arrayBuffer();
+                        let weight = await (await fetchCached(`https://huggingface.co/sushanthr/tinyLlama-1.1B-Chat-v1.0-fp16-webnn/resolve/main/Weights${i}.bin?download=true`)).arrayBuffer();
                         webnn_weights.push(weight);
                     }                    
                 }
