@@ -37,3 +37,10 @@ from output KV cache [1,4,2048,64] Copy copy it all to input KV values.
 
 past_sequence_length <- fill in this spot
 from values from last index.
+
+
+-- WebNN gaps --
+1. No dynamic sized tensors.
+2. No way to retain outputs in GPU memory. KV cache is copied from GPU > CPU > GPU for every token.
+3. Array buffers passed to inputs get detached after inferencing.
+4. Array buffers need to be exact size of the shape and cant be larger.
