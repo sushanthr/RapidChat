@@ -38,6 +38,7 @@
         const max_tokens = 256;
         const temperature = 0.2;
         const topk = 10;
+        window.webnn_optimize = false;
     
         async function fetchCached(url)
         {
@@ -158,6 +159,11 @@
             }
             return result;
         }
+        let last_graph = null;
+        let last_outputs = null;
+        let last_input_size = 0;
+        let last_output_operands = null;
+        let last_context = null;
         async function generateNextToken()
         {
             // Popluate position_ids.
@@ -166,35 +172,40 @@
             }
             let prev_input_length = model_inputs['input_ids'].data.length;
             let results = null;
-            let output_operands = null;
 
             // Run inference
             let webnn_mode = document.getElementById("backend").value == "RapidWebNN";
             if (webnn_mode) {
-                const context = await navigator.ml.createContext(
-                    {'deviceType' : 'gpu'});
-                let webnn_builder = new MLGraphBuilder(context);
-                InstallCpuOps(webnn_builder);
-                let graph_inputs=[];
-                for (let key of Object.keys(model_inputs)){
-                    if (model_inputs[key] instanceof NullTensor)
-                    {
-                        graph_inputs.push(model_inputs[key]);
+
+                // Graph building
+                if (!window.webnn_optimize || last_input_size != model_inputs.input_ids.operand_desc.dimensions[1])
+                {
+                    last_context = await navigator.ml.createContext({'deviceType' : 'gpu'}); 
+                    let webnn_builder = new MLGraphBuilder(last_context);
+                    InstallCpuOps(webnn_builder);
+                    let graph_inputs=[];
+                    for (let key of Object.keys(model_inputs)){
+                        if (model_inputs[key] instanceof NullTensor)
+                        {
+                            graph_inputs.push(model_inputs[key]);
+                        }
+                        else
+                        {
+                            graph_inputs.push(webnn_builder.input(key,  model_inputs[key].operand_desc));
+                        }
                     }
-                    else
-                    {
-                        graph_inputs.push(webnn_builder.input(key,  model_inputs[key].operand_desc));
-                    }
+                    graph_inputs.push(webnn_weights);
+                    graph_inputs.push(webnn_builder);
+                    last_output_operands = loadModelGraph(...graph_inputs);
+                    last_graph = await webnn_builder.build(last_output_operands);
+                    last_input_size = model_inputs.input_ids.operand_desc.dimensions[1];
                 }
-                graph_inputs.push(webnn_weights);
-                graph_inputs.push(webnn_builder);
-                output_operands = loadModelGraph(...graph_inputs);
-                const graph = await webnn_builder.build(output_operands);
-                const outputs = allocateWebNNOutputBuffers(output_operands);
+
+                last_outputs = allocateWebNNOutputBuffers(last_output_operands);
                 let webnn_inputs = replaceNullTensors(model_inputs);
-                results = await context.compute(graph, webnn_inputs, outputs);
+                results = await last_context.compute(last_graph, webnn_inputs, last_outputs);
                 results = results.outputs;
-                results.logits = new ort.Tensor(results.logits, output_operands.logits.shape());
+                results.logits = new ort.Tensor(results.logits, last_output_operands.logits.shape());
             } else {
                 results = await onnx_session.run(model_inputs);
             }
@@ -215,26 +226,81 @@
 
             // Prep for next iteration
             // New input is just the last token
-            let new_input_ids = new BigInt64Array(1);
-            new_input_ids[0] = BigInt(last_token[0][0]);
-            model_inputs['input_ids'] = getTensor(new_input_ids, [1, 1]);
-            let attention_mask =  new BigInt64Array(past_sequence_length+1);
-            attention_mask.fill(BigInt(1), 0, past_sequence_length + 1);
-
-            model_inputs['attention_mask'] = getTensor(attention_mask, [1, past_sequence_length+1]);
-            model_inputs['position_ids'] = getTensor(new BigInt64Array(1), [1 , 1]);
-            for (let ctx = 0; ctx < 22; ctx++)
+            if (webnn_mode && window.webnn_optimize)
             {
-                let ctx_string = ctx.toString();
-                if (webnn_mode)
+                let new_input_ids = new BigInt64Array(1);
+                new_input_ids[0] = BigInt(last_token[0][0]);
+                model_inputs['input_ids'] = getTensor(new_input_ids, [1, 1]);
+                model_inputs['position_ids'] = getTensor(new BigInt64Array(1), [1 , 1]);
+
+                let attention_mask =  new BigInt64Array(max_tokens);
+                attention_mask.fill(BigInt(1), 0, past_sequence_length + 1);
+                model_inputs['attention_mask'] = getTensor(attention_mask, [1, max_tokens]);
+                let src_token_dim = last_output_operands['present.0.key'].shape()[2];
+                for (let ctx = 0; ctx < 22; ctx++)
                 {
-                    model_inputs['past_key_values.'+ ctx_string +'.key'] = getTensor(results['present.'+ctx_string+'.key'],output_operands[['present.'+ctx_string+'.key']].shape());
-                    model_inputs['past_key_values.'+ ctx_string +'.value'] = getTensor(results['present.'+ctx_string+'.value'], output_operands[['present.'+ctx_string+'.value']].shape());
+                    let ctx_string = ctx.toString();
+                    let count = 4 * (max_tokens - 1) * 64;
+                    // for index, instead of length using count - 1 below.
+                    let new_keys = new Uint16Array(count);
+                    let new_values =  new Uint16Array(count);
+                    let present_keys = results['present.'+ctx_string+'.key'];
+                    let present_values = results['present.'+ctx_string+'.value'];
+                    let last_kv_location = results['present.'+ctx_string+'.key'].length < new_keys.length ?  past_sequence_length - 1: max_tokens-1;
+  
+                    // We now have new kv cache values at the end that we need to copy
+                    // to the correct spot in the new_keys.
+                    for (let i = 0; i < 4; i++)
+                    {
+                        for (let j = 0; j < past_sequence_length-1; j++)
+                        {
+                            for (let k = 0; k < 64; k++)
+                            {
+                                let dst = i * (max_tokens - 1) * 64 + j * 64 + k;
+                                let src = i *  (src_token_dim) * 64 + j * 64 + k;
+                                new_keys[dst] = present_keys[src];
+                                new_values[dst] = present_values[src];
+                            }
+                        }
+                    }
+                    // Now copy the new KV cache values.
+                    for (let i = 0; i < 4; i++)
+                    {
+                        for (let k = 0; k < 64; k++)
+                        {
+                            let dst = i * (max_tokens - 1) * 64 + (past_sequence_length-1) * 64 + k;
+                            let src = i *  (src_token_dim) * 64 + last_kv_location * 64 + k;
+                            new_keys[dst] = present_keys[src];
+                            new_values[dst] = present_values[src];
+                        }
+                    }
+  
+                    model_inputs['past_key_values.'+ ctx_string +'.key'] = getTensor(new_keys, [1, 4, max_tokens - 1, 64]);
+                    model_inputs['past_key_values.'+ ctx_string +'.value'] = getTensor(new_values, [1, 4, max_tokens - 1, 64]); 
                 }
-                else 
+            }
+            else
+            {
+                let new_input_ids = new BigInt64Array(1);
+                new_input_ids[0] = BigInt(last_token[0][0]);
+                model_inputs['input_ids'] = getTensor(new_input_ids, [1, 1]);
+                let attention_mask =  new BigInt64Array(past_sequence_length+1);
+                attention_mask.fill(BigInt(1), 0, past_sequence_length + 1);
+                model_inputs['attention_mask'] = getTensor(attention_mask, [1, past_sequence_length+1]);
+                model_inputs['position_ids'] = getTensor(new BigInt64Array(1), [1 , 1]);
+                for (let ctx = 0; ctx < 22; ctx++)
                 {
-                    model_inputs['past_key_values.'+ ctx_string +'.key'] = results['present.'+ctx_string+'.key'];
-                    model_inputs['past_key_values.'+ ctx_string +'.value'] = results['present.'+ctx_string+'.value'];
+                    let ctx_string = ctx.toString();
+                    if (webnn_mode)
+                    {
+                        model_inputs['past_key_values.'+ ctx_string +'.key'] = getTensor(results['present.'+ctx_string+'.key'],last_output_operands[['present.'+ctx_string+'.key']].shape());
+                        model_inputs['past_key_values.'+ ctx_string +'.value'] = getTensor(results['present.'+ctx_string+'.value'],last_output_operands[['present.'+ctx_string+'.value']].shape());
+                    }
+                    else 
+                    {
+                        model_inputs['past_key_values.'+ ctx_string +'.key'] = results['present.'+ctx_string+'.key'];
+                        model_inputs['past_key_values.'+ ctx_string +'.value'] = results['present.'+ctx_string+'.value'];
+                    }
                 }
             }
 
@@ -255,17 +321,10 @@
             let past_key_values_size = 1 * 4 * past_sequence_length * 64;
             const num_heads = 22; // Number of layers (0 to 21)
             const webnn = (document.getElementById("backend").value == "RapidWebNN"); // Set this to true for Float32Array, false for Uint16Array
-            let new_input_ids = new BigInt64Array(max_tokens);
-            let new_attention_mask = new BigInt64Array(max_tokens);
-            for (let i = 0; i < input_ids.data.length; ++i)
-            {
-                new_input_ids[i] = input_ids.data[i];
-                new_attention_mask[i] = attention_mask.data[i];
-            }
             model_inputs = {
-                input_ids: getTensor(new_input_ids, [1, max_tokens]),
-                attention_mask: getTensor(new_attention_mask, [1, max_tokens]),
-                position_ids: getTensor(new BigInt64Array(max_tokens), [1, max_tokens]),
+                input_ids: getTensor(input_ids.data, input_ids.dims),
+                attention_mask: getTensor(attention_mask.data, attention_mask.dims),
+                position_ids: getTensor(new BigInt64Array(input_ids.data.length), [1, input_ids.data.length]),
             };
             for (let i = 0; i < num_heads; i++) {
                 const ArrayType = webnn ? Uint16Array: Float32Array;

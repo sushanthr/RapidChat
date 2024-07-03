@@ -1,0 +1,39 @@
+graph_inputs[0].shape()
+(2) [1, 256]
+graph_inputs[1].shape()
+(2) [1, 256]
+graph_inputs[2].shape()
+(2) [1, 256]
+
+output_operands.logits.shape()
+(3) [1, 256, 32000]
+output_operands["present.0.key"].shape()
+(4) [1, 4, 256, 64]
+
+--- 
+
+graph_inputs[0].shape()
+(2) [1, 1]
+graph_inputs[1].shape()
+(2) [1, 257]            <- Attention mask
+graph_inputs[2].shape() <- Operand Position Id.
+(2) [1, 1]
+graph_inputs[3].shape()
+(4) [1, 4, 256, 64]
+
+output_operands.logits.shape()
+(3) [1, 1, 32000]
+output_operands["present.0.key"].shape()
+(4) [1, 4, 257, 64]
+
+
+---
+Plan
+- Allocate inputs, position tensor with [1,1]
+- Attention mask with size [1, 2048]
+- Past input of size [1,4,2047,64]
+Attention mask is set to one until our character of interest <- check this ✔️ we do this today.
+from output KV cache [1,4,2048,64] Copy copy it all to input KV values.
+
+past_sequence_length <- fill in this spot
+from values from last index.
